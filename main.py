@@ -1,35 +1,51 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from typing import List, Dict
 import re
 
 app = FastAPI()
 
-class MenuText(BaseModel):
+class OCRLine(BaseModel):
     text: str
+    x: float
+    y: float
+    width: float
+    height: float
 
-# Function to extract price from a line
-def extract_price(line: str):
-    match = re.search(r"(₹|\$|rs\.?|inr|usd|eur|aed|gbp|£|€)?\s*([0-9]+(?:\.[0-9]{1,2})?)", line, re.IGNORECASE)
-    if match:
-        return match.group(0)
-    return None
+class OCRRequest(BaseModel):
+    lines: List[OCRLine]
 
 @app.post("/parse_menu")
-def parse_menu(data: MenuText):
-    text = data.text
-    lines = [line.strip() for line in text.split("\n") if line.strip()]
+def parse_menu(data: OCRRequest):
+    lines = sorted(data.lines, key=lambda l: l.y)  # sort top to bottom
+    grouped = []
+    current_y = None
+    buffer = []
+
+    # Group lines by vertical position (same row)
+    for line in lines:
+        if current_y is None or abs(line.y - current_y) < 20:
+            buffer.append(line)
+            current_y = line.y
+        else:
+            grouped.append(buffer)
+            buffer = [line]
+            current_y = line.y
+    if buffer:
+        grouped.append(buffer)
 
     items = []
+    for group in grouped:
+        left = []
+        right = []
+        for line in sorted(group, key=lambda l: l.x):
+            if re.search(r"\d", line.text):  # contains a number = price
+                right.append(line.text)
+            else:
+                left.append(line.text)
+        name = " ".join(left).strip()
+        price = " ".join(right).strip()
+        if name:
+            items.append({"name": name, "price": price})
 
-    for line in lines:
-        price = extract_price(line)
-
-        if price:
-            # remove price from the line and keep the rest as name
-            name = line.replace(price, "").strip()
-            items.append({"name": name.title(), "price": price})
-        else:
-            # if no price, still add item
-            items.append({"name": line.title(), "price": ""})
-
-    return {"categories": [{"name": "Menu", "items": items}]}
+    return {"categories": items}
